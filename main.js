@@ -2,8 +2,7 @@ var Discord = require('discord.io');
 var logger = require('winston');
 var auth = require('./auth.json');
 
-var campaign = {};
-var currentEvent = {};
+var campaigns = [];
 
 // Configure logger settings
 logger.remove(logger.transports.Console);
@@ -28,38 +27,57 @@ bot.on('message', function (user, userID, channelID, message, evt) {
         var args = message.substring(1).split(' ');
         var cmd = args[0];
         var msg = "";
-        //var campaign = {};
+        var cIndex = getCampaign(channelID);
+        var campaign = (cIndex>=0)?campaigns[cIndex]:null;
+        var channel;
         args = args.splice(1);
-        switch(cmd) {
-            case 'new-campaign':
-                //cria um novo objecto "Campanha" limpo
-                campaign=newCampaign();
-                msg = "New Campaign has started! Everybody, get ready! GM, please type **!gm**.";
-                break;
-            case 'gm':
-                //o utilizador que 1º usa este comando torna-se o Game master
-                msg = checkGM(user,userID);
-                break;
-            case 'trait-max':
-                msg = statmax(userID,args[0]);
-                break;
-            case 'join':
-                msg = joinPlayer(user,userID,args);
-                break;
-            case 'stats':
-                msg = checkStats(userID);
-                break;
-            case 'event':
-                msg = newEvent(userID,args);
-                break;
-            case 'roll':
-                if(args.length!=1)
-                    msg="Please use the command like this: **!roll __trait__** (Trait has to be 'Body', 'Mind', 'Tongue' or 'Eye')";
-                msg=roll(userID,args[0]);
-                break;
+        if(cIndex==-1 && cmd=='gm-channel'){
+            msg=setGMChannel(userID,channelID,args);
+            channel=channelID;
+
+        }else if(cIndex==-1 && cmd!='new-campaign'){
+            channel=channelID;
+            msg="There's no campaign running on this channel.";
+        }else{
+            switch(cmd) {
+                case 'new-campaign':
+                    //cria um novo objecto "Campanha" limpo
+                    campaign=newCampaign(channelID);
+                    if(cIndex==-1){
+                        campaigns.push(campaign);
+                        cIndex=campaigns.length-1;
+                    }else{
+                        campaigns[cIndex]=campaign;
+                    }
+                    campaign.campaignID=cIndex;
+                    msg = "New Campaign has started (ID: "+cIndex+")! Everybody, get ready! GM, please type **!gm**.";
+                    break;
+                case 'gm':
+                    //o utilizador que 1º usa este comando torna-se o Game master
+                    msg = checkGM(user,userID,campaign);
+                    break;
+                case 'trait-max':
+                    msg = statmax(userID,args[0],campaign);
+                    break;
+                case 'join':
+                    msg = joinPlayer(user,userID,args,campaign);
+                    break;
+                case 'stats':
+                    msg = checkStats(userID,campaign);
+                    break;
+                case 'event':
+                    msg = newEvent(userID,args,campaign);
+                    break;
+                case 'roll':
+                    if(args.length!=1)
+                        msg="Please use the command like this: **!roll __trait__** (Trait has to be 'Body', 'Mind', 'Tongue' or 'Eye')";
+                    msg=roll(userID,args[0],campaign);
+                    break;
+            }
+            channel=campaign.campaignChannel;
         }
         bot.sendMessage({
-            to: channelID,
+            to: channel,
             message: msg
         });
      }
@@ -67,19 +85,52 @@ bot.on('message', function (user, userID, channelID, message, evt) {
     //console.log(channelID);
 });
 
-function newCampaign(){
-    return  obj = {
-        campaignName : "",
-        maxStats: "",
+function setGMChannel(userID,channelID,args){
+    var id;
+    if(args.length!=1) return "Please use this command like this: **!gm-channel __campaignID__**.";
+    id=parseInt(args[0]);
+    if(isNaN(id)) return "Not a valid ID.";
+    id=checkID(id);
+    if(id==-1) return "No such campaign.";
+    if(userID!=campaigns[id].gm.usercode) return "Only the GM can execute this command.";
+    campaigns[id].gmChannel=channelID;
+    return "GM Channel set. Welcome, **"+campaigns[id].gm.username+"**.";
+}
+
+function checkID(id){
+    for(var i=0;i<campaigns.length;i++){
+        if(campaigns[i].campaignID==id){
+            return i;
+        }
+    }
+    return -1;
+}
+
+function getCampaign(channelID){
+    for(var i=0;i<campaigns.length;i++){
+        if(campaigns[i].campaignChannel==channelID || campaigns[i].gmChannel==channelID){
+            return i;
+        }
+    }
+    return -1;
+}
+
+function newCampaign(channelID){
+    return obj = {
+        campaignID : "",
+        campaignChannel: channelID,
+        gmChannel: "",
+        maxStats: -1,
         gm: {
             username: "",
             usercode: ""
         },
-        players: []
+        players: [],
+        event: {}
     }
 }
 
-function checkGM(user,userID){
+function checkGM(user,userID,campaign){
     if(campaign.gm.usercode == "" && campaign.gm.username == ""){
         campaign.gm.username=user;
         campaign.gm.usercode=userID;
@@ -90,7 +141,7 @@ function checkGM(user,userID){
     return "This campaign already has a Game Master.";
 }
 
-function statmax(userID,max){
+function statmax(userID,max,campaign){
     if(campaign.gm.usercode==userID){
         if(isNaN(max) || max<0 || max>400){return "The total trait maximum has to be a number between 0-400!"}
         campaign.maxStats=max;
@@ -106,7 +157,7 @@ function statmax(userID,max){
 
 
 
-function joinPlayer(user,userID,args){
+function joinPlayer(user,userID,args,campaign){
     var check=true;
     var traits=[0,0,0,0];
     var newPlayer={
@@ -153,7 +204,7 @@ function joinPlayer(user,userID,args){
     return "Welcome " + newPlayer.name + "! You can check your stats any time with **!stats**! We're looking foward to watching your progress."
 }
 
-function checkStats(userID){
+function checkStats(userID,campaign){
     var msg="";
     campaign.players.forEach(p => {
         if(p.usercode==userID){
@@ -165,7 +216,7 @@ function checkStats(userID){
     return msg;
 }
 
-function newEvent(userID,args){
+function newEvent(userID,args,campaign){
     var check=true;
     var th=[];
 
@@ -186,7 +237,7 @@ function newEvent(userID,args){
     if(th[0]>th[1] || th[1]>th[2])
         return "The critical falure threshold has to be smaller than the faliure/sucess threshold, which "+
                "has to be smaller than the critical sucess threshold.";
-    currentEvent={
+    campaign.event={
         cfTH: th[0],
         fsTH: th[1],
         csTH: th[2]
@@ -195,7 +246,7 @@ function newEvent(userID,args){
     
 }
 
-function roll(userID,trait){
+function roll(userID,trait,campaign){
     var player={};
     var check=false;
     var roll;
@@ -225,11 +276,11 @@ function roll(userID,trait){
             return  "The trait has to be 'body', 'mind', 'tongue' or 'eye'."
     }
 
-    if(roll<currentEvent.cfTH)
+    if(roll<campaign.event.cfTH)
         return "Oof! "+player.name+" just suffered a critical failiure!";
-    if(roll<currentEvent.fsTH)
+    if(roll<campaign.event.fsTH)
         return player.name+" has failed!";
-    if(roll<currentEvent.csTH)
+    if(roll<campaign.event.csTH)
         return player.name+" has succeeded!";
     return "Wow! "+player.name+" managed a critical success! Truly remarkable!";
 }
